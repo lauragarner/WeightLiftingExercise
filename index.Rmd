@@ -1,0 +1,133 @@
+---
+title: "Practical Machine Learning course project"
+author: "Laura Garner"
+date: "31 March 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(parallel)
+library(doParallel)
+cluster<- makeCluster(detectCores()-1)
+registerDoParallel(cluster)
+setwd("C:/Data Science study/Projects/weightlifting/WeightLiftingExercise")
+```
+
+## Executive summary
+This project looks at predicting whether weight lifting exercises are being performed correctly. 
+
+The approach taken to build the prediction model was to take a random forest method and refine it as far as possible, rather than building a variety of different models. The accuracy achieved is 99.51%.
+
+#Background
+Using devices such as *Jawbone Up*, *Nike FuelBand* and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly do is quantify *how much* of a particular activity they do, but they rarely quantify *how well* they do it. The data for this project is from accelerometers on the belt, forearm, arm and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+Further information on the study can be found at http://groupware.les.inf.puc-rio.br/har . 
+
+The data used for this project comes from this source: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+##Preparing the data
+The following code sets a seed to allow for reproducible results, plus loads the required libraries. Note, the data is read in from the working directory.
+
+```{r Prep}
+set.seed(190331)
+library(caret)
+library(parallel)
+library(doParallel)
+data<- read.csv("pml-training.csv")
+```
+Any exploration of the data should be done only on the training set, so here we will split the data into training and testing sets. The test set is used only for testing the final model.
+
+```{r data_partition}
+inTrain<- createDataPartition(data$classe, p=3/4, list = FALSE)
+wle_train<- data[inTrain,]
+wle_test<- data[-inTrain,]
+```
+
+##Exploring the training set
+###Near Zero Variance
+A simple way to remove poor predictors from our data is to identify those that have a near zero variance. This set of code looks to see if there are such predictors in our data which can be removed.
+```{r nzv}
+#Identify those predictors with a near zero variance
+nzv_data<- nearZeroVar(wle_train, saveMetrics = TRUE)
+
+#Remove those predictors from the training data
+wle_train1<- wle_train[,nzv_data$nzv==FALSE]
+dim(wle_train1)
+```
+Removing predictors with near zero variance has resulted in the data being taken from `r ncol(wle_train)` predictors to `r ncol(wle_train1)`.
+
+### NA values
+Predictors with a large number of NA values are similarly not useful for prediction, and can break our model. This code looks at the proportion of NA values in each predictor and drops those with greater than 50% NA values. Further observation of the data shows the NA values are either very high or nil, as demonstrated in this table:
+
+
+``` {r NA_values}
+na_count<- sapply(wle_train1, function(y) sum(is.na(y)))
+aggregate(na_count, list(na_count), FUN=sum)
+```
+
+The above table shows there are either zero or 14,428 NA values in the predictors, there is nothing in between. 
+
+Remove those columns with the large number of NA values with the following code:
+
+```{r NA_drop}
+na_count<- data.frame(na_count[na_count > (0.5*nrow(wle_train1))])
+drop<- rownames(na_count)
+wle_train2<- wle_train1[,!(names(wle_train1) %in% drop)]
+```
+
+We now are dealing with a reduced training dataset with `r ncol(wle_train2)` predictors.
+
+### Removing unnecessary columns
+From observation, there are several columns that do not have any bearing on the prediction model we are trying to build, as they are related to the experiment and are not sensor measurements. These include a row count ("x") and the names of participants ("user_name").
+
+``` {r extra_cols}
+#Remove columns by index number
+final_train<- wle_train2[-c(1:6)]
+```
+
+##Building the model
+A random forest model has been selected due to its high accuracy This model was created initially with no specific parameters, and then was further tested and refined until the highest accuracy was achieved. 
+
+Testing included pre-processing with principal components analysis however this reduced the accuracy by approximately 1.5%. Similarly, different numbers of k-fold validation were tested with minimal difference in accuracy. 
+
+###Configuring trainControl
+Parallel processing has been configured to run the random forest model. The code for the parallel processing can be found at appendix 1. Cross-validation is being used, with 10 k-folds.
+
+```{r trainControl}
+fitControl<- trainControl(method = "cv", number=10, allowParallel = TRUE)
+```
+
+###Develop training model
+The model is built with random forest method, and includes the training controls that were configured in the previous step.
+
+``` {r model}
+fitModel<- train(classe~., method = "rf", trControl = fitControl, data = final_train)
+```
+
+##Test the model
+The model can then be tested against the held-out test dataset.
+
+```{r predict}
+prediction<- predict(fitModel, newdata = wle_test)
+confusionMatrix(prediction, wle_test$classe)
+```
+
+The model is 99.51% accurate, making the out of sample error rate 0.49%.
+
+
+
+###Appendix 1 Parallel processing
+The following code is used to configure parallel processing, thus reducing the time taken to run the random forest model.
+
+``` {r parallel_setup, eval=FALSE}
+cluster<- makeCluster(detectCores()-1)
+registerDoParallel(cluster)
+```
+
+After the model is built, the following code stops the parallel processing:
+
+```{r parallel_stop}
+stopCluster(cluster)
+registerDoSEQ()
+```
